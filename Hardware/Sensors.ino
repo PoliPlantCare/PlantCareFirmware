@@ -4,14 +4,15 @@
 
 //Pinos 
 #define typeDHT DHT22   
-const int pinDHT 34;
-const int pinLDR 35;
-const int pinSOIL 36;
+const int pinDHT = 17;
+const int pinLDR = 35;
+const int pinSOIL = 32;
+const int pinBomba = 21;
 DHT dht(pinDHT, typeDHT);
 
 //Valores para conversao lux
-const float V_IN 3.3;
-const float resistor 10000;
+const float V_IN = 3.3;
+const float resistor = 10000;
 
 //Conexao com servidor 
 const char* ssid = "PlantCare";
@@ -22,13 +23,49 @@ const int mqtt_port = 8883;
 const char* mqtt_user = "plantcare";
 const char* mqtt_password = "zcY7a@7&ONNhQdmE";
 
-WiFiClient espClient;
+WiFiClientSecure espClient;
 PubSubClient client(espClient);
+//Bomba: comando e status atual
+bool comandoBomba = false;
+bool bombaLigada = false;
+
+//Conexao ao servidor MQTT
+void reconnect()
+{
+  while (!client.connected()) {
+    Serial.println("Conectando ao broker MQTT...");
+    if (client.connect("ESP32Client", mqtt_user,mqtt_password)) {
+      Serial.println("Conectado!");
+      client.subscribe("planta/bomba");
+    } else {
+      Serial.print("Falha. Código: ");
+      Serial.println(client.state());
+      delay(2000);
+    }
+  }
+}
+
+//Callback do MQTT
+void callback(char* topic, byte* payload, unsigned int length) 
+{
+    String msg = "";
+    for (unsigned int i = 0; i < length; i++) {
+        msg += (char)payload[i];
+    }
+    if (String(topic) == "planta/bomba"){
+      if (msg == "ON")
+          comandoBomba = true; 
+      if (msg == "OFF")
+          comandoBomba = false; 
+    }
+}
 
 void setup() {
   Serial.begin(115200);
   dht.begin();
   
+  pinMode(pinBomba, OUTPUT);
+  digitalWrite(pinBomba, LOW);
   //Iniciando Wifi e servidor 
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
@@ -38,20 +75,13 @@ void setup() {
   Serial.println("\nWiFi conectado");
 
   client.setServer(mqtt_server, mqtt_port);
-  while (!client.connected()) {
-    Serial.println("Conectando ao broker MQTT...");
-    if (client.connect("ESP32Client", mqtt_user,mqtt_password)) {
-      Serial.println("Conectado!");
-    } else {
-      Serial.print("Falha. Código: ");
-      Serial.println(client.state());
-      delay(2000);
-    }
-  }
+  client.setCallback(callback);
 }
 
 void loop() {
-  delay(2000);
+  if (!client.connected()){
+    reconnect();
+  }
 
   // Leitura dos sensores 
   float umid = dht.readHumidity();
@@ -59,7 +89,7 @@ void loop() {
   int adcBruto = analogRead(pinLDR);
   int solo = analogRead(pinSOIL);
   //Repete tentativa de leitura no caso de falha 
-  if (isnan(umid) || isnan(temp)||isnan(adcBruto)|| isnan(solo)) {
+  if (isnan(umid) || isnan(temp)) {
     Serial.println(F("Falha de leitura"));
     return;
   }
@@ -70,18 +100,23 @@ void loop() {
   float resistenciaLDR = resistor * ((V_IN / tensao) - 1.0);//calcula resistencia a partir de tensao
   float lux = pow(500000 / resistenciaLDR, 1.4); //calculo de ohms para lux (apenas aceitar)
 
-  //======== sensor do solo ========
+  //Sensor do solo 
   int porcenSolo = map(solo, 4095, 0, 0, 100);
   
   if (!client.connected()) {
         reconnect();
   }
+  //Sensores -> MQTT
   client.loop();
-  client.publish("planta/temperatura", String(temp).c_str());
-  client.publish("planta/solo", String(porcenSolo).c_str());
-  client.publish("planta/umidade", String(umid).c_str());
-  client.publish("planta/luz", String(lux).c_str());
-    delay(5000);
+  static unsigned long ultimoEnvio = 0;
+
+  if (millis() - ultimoEnvio > 5000){
+    ultimoEnvio = millis();
+    client.publish("planta/temperatura", String(temp).c_str());
+    client.publish("planta/solo", String(porcenSolo).c_str());
+    client.publish("planta/umidade", String(umid).c_str());
+    client.publish("planta/luz", String(lux).c_str());
+  }
     
   Serial.print(F("Humidity: "));
   Serial.print(umid);
@@ -89,13 +124,22 @@ void loop() {
   Serial.print(F("%  Temperature: "));
   Serial.print(temp);
 
-  Serial.print(F("°C   Heat index: "));
-  Serial.print(hic);
-
   Serial.print("°C    Lux: ");
   Serial.print(lux);
 
   Serial.print("    Umidade do solo: ");
   Serial.print(porcenSolo);
   Serial.println("% ");
+  
+  //MQTT -> Atuador 
+  if (comandoBomba && !bombaLigada){
+    digitalWrite(pinBomba, HIGH);
+    bombaLigada = true;
+    Serial.println("Bomba Ligada");
+  }
+  else if (!comandoBomba && bombaLigada){
+    digitalWrite(pinBomba, LOW);
+    bombaLigada = false; 
+    Serial.println("Bomba desligada");
+  }
 }

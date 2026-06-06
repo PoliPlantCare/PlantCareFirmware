@@ -3,6 +3,7 @@
 #include <PubSubClient.h>
 #include <time.h>
 #include <ArduinoJson.h>
+#include <WiFiClientSecure.h>
 
 // Pinos
 #define typeDHT DHT22
@@ -19,7 +20,7 @@ const float resistor = 10000;
 // Conexao com servidor
 const char* ssid = "PlantCare";
 const char* password = "Plant1234";
-const char* mqtt_server = "1710d2c005d94ca7902c7327ae6b95fd.s1.eu.hivemq.cloud.hivemq.cloud";
+const char* mqtt_server = "1710d2c005d94ca7902c7327ae6b95fd.s1.eu.hivemq.cloud";
 const int mqtt_port = 8883;
 
 // Credenciais MQTT
@@ -40,8 +41,19 @@ Intervalo agenda[MAX_INTERVALOS];
 int totalIntervalos = 0;
 bool agendaRecebida = false;
 
+// Configuracao da Planta (recebida via MQTT)
+struct ConfigPlanta {
+  char nome[64];
+  int umidadeMax; // acima disto, rega fixa nao ocorre
+  int umidadeMin; // abaixo disto, rega de emergencia e ativada
+};
+
+ConfigPlanta configPlanta = {"", 80, 20};
+bool configRecebida = false;
+
 // Estado da bomba
 bool bombaLigada = false;
+bool bombaEmergencia = false;
 
 // NTP - após sincronizar com NTP, o ESP32 mantém o tempo internamente
 const char* ntpServer = "pool.ntp.org";
@@ -75,6 +87,42 @@ bool getHoraAtual(int &hora, int &minuto) {
   hora   = timeinfo.tm_hour;
   minuto = timeinfo.tm_min;
   return true;
+}
+
+// Formato esperado no tópico planta/config
+// {"nome":"Samambaia","umidade_max":70,"umidade_min":25}
+void parseConfigPlanta(const String& json) {
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, json);
+  if (err) {
+    Serial.print("Erro ao parsear config da planta: ");
+    Serial.println(err.c_str());
+    return;
+  }
+
+  const char* nome = doc["nome"] | "";
+  int uMax = doc["umidade_max"] | -1;
+  int uMin = doc["umidade_min"] | -1;
+
+  if (strlen(nome) == 0 || uMax < 0 || uMin < 0) {
+    Serial.println("Config invalida: campos ausentes ou incorretos");
+    return;
+  }
+
+  if (uMin >= uMax) {
+    Serial.println("Config invalida: umidade_min deve ser menor que umidade_max");
+    return;
+  }
+
+  strlcpy(configPlanta.nome, nome, sizeof(configPlanta.nome));
+  configPlanta.umidadeMax = uMax;
+  configPlanta.umidadeMin = uMin;
+  configRecebida = true;
+
+  Serial.printf("Config da planta recebida:\n");
+  Serial.printf("  Nome       : %s\n",  configPlanta.nome);
+  Serial.printf("  Umid. Max  : %d%%\n", configPlanta.umidadeMax);
+  Serial.printf("  Umid. Min  : %d%%\n", configPlanta.umidadeMin);
 }
 
 // Formato esperado no tópico planta/bomba/horarios
@@ -111,14 +159,35 @@ void parseAgenda(const String& json) {
   Serial.printf("Agenda carregada: %d intervalo(s)\n", totalIntervalos);
 }
 
-//Logica da bomba por agenda 
-void atualizarBomba() {
+//Logica da bomba: agenda + limites de umidade do solo
+void atualizarBomba(int porcenSolo) {
+  // --- Rega de emergencia: solo abaixo do minimo, fora da agenda ---
+  if (configRecebida && porcenSolo < configPlanta.umidadeMin) {
+    if (!bombaLigada) {
+      digitalWrite(pinBomba, HIGH);
+      bombaLigada = true;
+      bombaEmergencia = true;
+      Serial.printf("Bomba LIGADA (emergencia: solo %d%% < min %d%%)\n",
+                    porcenSolo, configPlanta.umidadeMin);
+    }
+    return;
+  }
+
+  // Se estava em emergencia e solo subiu, desliga
+  if (bombaEmergencia && bombaLigada) {
+    digitalWrite(pinBomba, LOW);
+    bombaLigada = false;
+    bombaEmergencia = false;
+    Serial.println("Bomba DESLIGADA (solo recuperado apos emergencia)");
+  }
+
+  // --- Rega por agenda: apenas se solo abaixo do maximo ---
   if (!agendaRecebida || !ntpSincronizado) return;
 
   int hora, minuto;
   if (!getHoraAtual(hora, minuto)) return;
 
-  int agora = hora * 60 + minuto; // minutos desde meia-noite
+  int agora = hora * 60 + minuto;
   bool deveEstarLigada = false;
 
   for (int i = 0; i < totalIntervalos; i++) {
@@ -128,6 +197,13 @@ void atualizarBomba() {
       deveEstarLigada = true;
       break;
     }
+  }
+
+  // Bloqueia rega agendada se solo ja esta acima do maximo
+  if (deveEstarLigada && configRecebida && porcenSolo >= configPlanta.umidadeMax) {
+    deveEstarLigada = false;
+    Serial.printf("Rega agendada BLOQUEADA (solo %d%% >= max %d%%)\n",
+                  porcenSolo, configPlanta.umidadeMax);
   }
 
   if (deveEstarLigada && !bombaLigada) {
@@ -146,7 +222,12 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String msg = "";
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
 
-  if (String(topic) == "planta/bomba/horarios") {
+  if (String(topic) == "planta/config") {
+    Serial.println("Nova config de planta recebida:");
+    Serial.println(msg);
+    parseConfigPlanta(msg);
+  }
+  else if (String(topic) == "planta/bomba/horarios") {
     Serial.println("Nova agenda recebida:");
     Serial.println(msg);
     parseAgenda(msg);
@@ -159,6 +240,7 @@ void reconnect() {
     if (client.connect("ESP32Client", mqtt_user, mqtt_password)) {
       Serial.println("Conectado!");
       // Recebe a agenda com retain=true — o broker reenvia o último valor ao conectar
+      client.subscribe("planta/config");
       client.subscribe("planta/bomba/horarios");
     } else {
       Serial.print("Falha. Código: ");
@@ -217,7 +299,7 @@ void loop() {
 
   // Publicacao de sensores 
   static unsigned long ultimoEnvio = 0;
-  if (client.connected() && millis() - ultimoEnvio > 5000) {
+  if (client.connected() && millis() - ultimoEnvio > 600000) { //10 minutos
     ultimoEnvio = millis();
     client.publish("planta/temperatura", String(temp).c_str());
     client.publish("planta/solo",        String(porcenSolo).c_str());
@@ -228,8 +310,8 @@ void loop() {
   Serial.printf("Temp: %.1f°C  Umid: %.1f%%  Lux: %.1f  Solo: %d%%\n",
                 temp, umid, lux, porcenSolo);
 
-  // Controle da bomba por agenda local 
-  atualizarBomba();
+  // Controle da bomba por agenda local + limites de umidade
+  atualizarBomba(porcenSolo);
 
   delay(1000);
 }

@@ -6,7 +6,7 @@
 #include <WiFiClientSecure.h>
 
 // Pinos
-#define typeDHT DHT22
+#define typeDHT DHT11
 const int pinDHT = 17;
 const int pinLDR = 35;
 const int pinSOIL = 32;
@@ -265,7 +265,8 @@ void setup() {
   Serial.println("\nWiFi conectado");
 
   sincronizarNTP(); 
-
+  
+  espClient.setInsecure();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
 }

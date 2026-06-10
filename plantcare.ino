@@ -13,7 +13,7 @@ const int pinSOIL = 32;
 const int pinBomba = 21;
 DHT dht(pinDHT, typeDHT);
 
-// Valores para conversao lux
+// Valores para conversão lux
 const float V_IN = 3.3;
 const float resistor = 10000;
 
@@ -30,7 +30,7 @@ const char* mqtt_password = "zcY7a@7&ONNhQdmE";
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
-//Agendamento de Rega Automatica
+//Agendamento de Rega Automática
 struct Intervalo {
   int onHour, onMin;   // hora de ligar
   int offHour, offMin; // hora de desligar
@@ -41,11 +41,11 @@ Intervalo agenda[MAX_INTERVALOS];
 int totalIntervalos = 0;
 bool agendaRecebida = false;
 
-// Configuracao da Planta (recebida via MQTT)
+// Configuração da Planta (recebida via MQTT)
 struct ConfigPlanta {
   char nome[64];
   int umidadeMax; // acima disto, rega fixa nao ocorre
-  int umidadeMin; // abaixo disto, rega de emergencia e ativada
+  int umidadeMin; // abaixo disto, rega de emergencia é ativada
 };
 
 ConfigPlanta configPlanta = {"", 80, 20};
@@ -57,7 +57,7 @@ bool bombaEmergencia = false;
 
 // NTP - após sincronizar com NTP, o ESP32 mantém o tempo internamente
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = -3 * 3600; //ajuste do fuso
+const long  gmtOffset_sec = -3 * 3600; // ajuste do fuso
 const int   daylightOffset_sec = 0;
 
 bool ntpSincronizado = false;
@@ -161,7 +161,7 @@ void parseAgenda(const String& json) {
 
 //Logica da bomba: agenda + limites de umidade do solo
 void atualizarBomba(int porcenSolo) {
-  // --- Rega de emergencia: solo abaixo do minimo, fora da agenda ---
+  // --- Rega de emergência: solo abaixo do minimo, fora da agenda ---
   if (configRecebida && porcenSolo < configPlanta.umidadeMin) {
     if (!bombaLigada) {
       digitalWrite(pinBomba, HIGH);
@@ -173,7 +173,7 @@ void atualizarBomba(int porcenSolo) {
     return;
   }
 
-  // Se estava em emergencia e solo subiu, desliga
+  // Se estava em emergência e solo subiu, desliga
   if (bombaEmergencia && bombaLigada) {
     digitalWrite(pinBomba, LOW);
     bombaLigada = false;
@@ -199,7 +199,7 @@ void atualizarBomba(int porcenSolo) {
     }
   }
 
-  // Bloqueia rega agendada se solo ja esta acima do maximo
+  // Bloqueia rega agendada se solo já está acima do máximo
   if (deveEstarLigada && configRecebida && porcenSolo >= configPlanta.umidadeMax) {
     deveEstarLigada = false;
     Serial.printf("Rega agendada BLOQUEADA (solo %d%% >= max %d%%)\n",
@@ -217,7 +217,7 @@ void atualizarBomba(int porcenSolo) {
   }
 }
 
-//Callback MQTT 
+// Callback MQTT 
 void callback(char* topic, byte* payload, unsigned int length) {
   String msg = "";
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
@@ -298,7 +298,7 @@ void loop() {
   float lux = pow(500000 / resistenciaLDR, 1.4);
   int porcenSolo = map(solo, 4095, 0, 0, 100);
 
-  // Publicacao de sensores 
+  // Publicação de sensores 
   static unsigned long ultimoEnvio = 0;
   if (client.connected() && millis() - ultimoEnvio > 600000) { //10 minutos
     ultimoEnvio = millis();

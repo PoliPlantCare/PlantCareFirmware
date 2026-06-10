@@ -2,7 +2,7 @@
 
 Este repositório contém o firmware desenvolvido em C++ (plataforma Arduino) para o microcontrolador ESP32. Ele é a peça de hardware do **PlantCare**, responsável por coletar dados da planta e executar a lógica de controle da bomba de irrigação.
 
-Este projeto atua como o cliente IoT e deve ser utilizado em conjunto com o nosso backend, disponível em: [PlantCareServer](https://github.com/PlantCare/PlantCareServer).
+Este projeto atua como o cliente IoT e deve ser utilizado em conjunto com o nosso backend, disponível em: [PlantCareServer](https://github.com/PoliPlantCare/).
 
 ## Funcionalidades
 
